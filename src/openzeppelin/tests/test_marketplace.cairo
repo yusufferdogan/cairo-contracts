@@ -2,9 +2,13 @@ use openzeppelin::marketplace::marketplace::Marketplace;
 use openzeppelin::marketplace::marketplace::IERC20DispatcherTrait;
 use openzeppelin::marketplace::marketplace::IERC20Dispatcher;
 use openzeppelin::marketplace::marketplace::IERC20LibraryDispatcher;
+use openzeppelin::marketplace::marketplace::IERC721DispatcherTrait;
+use openzeppelin::marketplace::marketplace::IERC721Dispatcher;
+use openzeppelin::marketplace::marketplace::IERC721LibraryDispatcher;
 use openzeppelin::marketplace::marketplace::Offer;
 use openzeppelin::marketplace::marketplace::Listing;
 use openzeppelin::token::erc20::ERC20;
+use openzeppelin::token::erc721::ERC721;
 
 use starknet::contract_address_const;
 use starknet::ContractAddress;
@@ -27,14 +31,13 @@ use traits::TryInto;
 use option::OptionTrait;
 use result::ResultTrait;
 use array::ArrayTrait;
+use integer::BoundedU256;
 
 #[abi]
 trait IMarketplace {
     fn sendToken(to: ContractAddress, value: u256);
     fn get_erc20_address() -> ContractAddress;
-    fn list(
-        nft_contract_address: ContractAddress, tokenId: u256, price: u128, expiresAt: u128
-    );
+    fn list(nft_contract_address: ContractAddress, tokenId: u256, price: u128, expiresAt: u128);
     fn get_listing(nft_contract_address: ContractAddress, tokenId: u256) -> Listing;
     fn offer(
         nft_contract_address: ContractAddress, tokenId: u256, bid_amount: u128, expires_at: u128
@@ -47,7 +50,7 @@ trait IMarketplace {
 const NAME: felt252 = 111;
 const SYMBOL: felt252 = 222;
 
-fn setup() -> (ContractAddress, ContractAddress) {
+fn setup() -> (ContractAddress, ContractAddress, ContractAddress) {
     let user1 = contract_address_const::<0x123456789>();
 
     let mut calldata = ArrayTrait::new();
@@ -72,7 +75,18 @@ fn setup() -> (ContractAddress, ContractAddress) {
         Marketplace::TEST_CLASS_HASH.try_into().unwrap(), 0, calldata.span(), false
     ).unwrap();
 
-    (token_address, marketplace_address)
+    let mut calldata = ArrayTrait::new();
+    let name = 'YUSUF_NFT';
+    let symbol = 'Y_NFT';
+
+    calldata.append(name);
+    calldata.append(symbol);
+
+    let (erc721_address, _) = deploy_syscall(
+        ERC721::TEST_CLASS_HASH.try_into().unwrap(), 0, calldata.span(), false
+    ).unwrap();
+
+    (token_address, marketplace_address, erc721_address)
 }
 
 #[test]
@@ -91,7 +105,7 @@ fn test_erc20_constructor() {
 #[test]
 #[available_gas(2000000)]
 fn test_send_token() {
-    let (token_address, marketplace_address) = setup();
+    let (token_address, marketplace_address, erc721_address) = setup();
     let token = IERC20Dispatcher { contract_address: token_address };
     let marketplace = IMarketplaceDispatcher { contract_address: marketplace_address };
 
@@ -112,86 +126,53 @@ fn test_send_token() {
 #[test]
 #[available_gas(2000000)]
 fn test_offer() {
-    let (token_address, marketplace_address) = setup();
+    let (token_address, marketplace_address, erc721_address) = setup();
     let token = IERC20Dispatcher { contract_address: token_address };
     let marketplace = IMarketplaceDispatcher { contract_address: marketplace_address };
+    let nft = IERC721Dispatcher { contract_address: erc721_address };
 
     let caller = contract_address_const::<0xa>();
 
-    let nft_contract_address = contract_address_const::<0x123456789>();
     let nftId: u256 = 1.into();
-    let bid_amount:u128 = 50;
-    let expires_at:u128 = 60;
+    let bid_amount: u128 = 50;
+    let expires_at: u128 = 60;
 
     set_contract_address(caller);
-    marketplace.offer(nft_contract_address, nftId, bid_amount, expires_at);
-    let offer: Offer = marketplace.get_offer(nft_contract_address, caller, nftId);
+    nft.mint();
+    token.approve(marketplace_address, BoundedU256::max());
+
+    marketplace.offer(erc721_address, nftId, bid_amount, expires_at);
+    let offer: Offer = marketplace.get_offer(erc721_address, caller, nftId);
+
     assert(offer.bid_amount == bid_amount, 'bid amount not equal');
     assert(offer.expires_at == expires_at, 'expires_at not equal');
 }
 #[test]
 #[available_gas(2000000)]
 fn test_list() {
-    let (token_address, marketplace_address) = setup();
+    let (token_address, marketplace_address, erc721_address) = setup();
     let token = IERC20Dispatcher { contract_address: token_address };
     let marketplace = IMarketplaceDispatcher { contract_address: marketplace_address };
+    let nft = IERC721Dispatcher { contract_address: erc721_address };
 
     let caller = contract_address_const::<0xa>();
 
-    let nft_contract_address = contract_address_const::<0x123456789>();
-    let nftId:u256 = 1.into();
-    let price:u128 = 50;
-    let expires_at:u128 = 60;
+    let nftId: u256 = 0.into();
+    let price: u128 = 50;
+    let expires_at: u128 = 60;
 
     set_contract_address(caller);
-    marketplace.list(nft_contract_address, nftId, price, expires_at);
+    nft.mint();
+    nft.set_approval_for_all(marketplace_address, true);
 
-    let listing: Listing = marketplace.get_listing(nft_contract_address, nftId);
+    assert(nft.is_approved_for_all(caller,marketplace_address) == true , 'not approved for all');
+    assert(nft.owner_of(nftId) == caller, 'nft owner is not correct');
+
+    marketplace.list(erc721_address, nftId, price, expires_at);
+
+    let listing: Listing = marketplace.get_listing(erc721_address, nftId);
     assert(listing.price == price, 'price not equal');
     assert(listing.seller == caller, 'seller not equal');
     assert(listing.expires_at == expires_at, 'expires_at not equal');
 }
-// #[available_gas(2000000)]
-// fn test_deposit() {
-//     let (token_address, marketplace_address) = setup();
-//     let token = IERC20Dispatcher { contract_address: token_address };
-//     let marketplace = IMarketplaceDispatcher { contract_address: marketplace_address };
-
-//     let user1 = contract_address_const::<0x123456789>();
-
-//     let to: ContractAddress = contract_address_const::<963>();
-//     let amount: u256 = 50.into();
-
-//     set_contract_address(user1); // `caller_address` in contract will return
-//     // `user1` instead of `0`.
-//     token.approve(marketplace_address, amount);
-//     marketplace.deposit(amount);
-//     assert(token.balance_of(marketplace_address) == amount, 'balance_of');
-//     assert(marketplace.get_user_balance(user1) == amount, 'get_user_balance');
-// }
-
-// #[test]
-// #[available_gas(2000000)]
-// fn test_withdraw() {
-//     let (token_address, marketplace_address) = setup();
-//     let token = IERC20Dispatcher { contract_address: token_address };
-//     let marketplace = IMarketplaceDispatcher { contract_address: marketplace_address };
-
-//     let user1 = contract_address_const::<0x123456789>();
-
-//     let to: ContractAddress = contract_address_const::<963>();
-//     let amount: u256 = 50.into();
-
-//     set_contract_address(user1); // `caller_address` in contract will return
-//     // `user1` instead of `0`.
-//     token.approve(marketplace_address, amount);
-//     marketplace.deposit(amount);
-//     assert(token.balance_of(marketplace_address) == amount, 'balance_of');
-//     assert(marketplace.get_user_balance(user1) == amount, 'get_user_balance');
-
-//     marketplace.withdraw(amount);
-//     assert(token.balance_of(marketplace_address) == 0.into(), 'balance_of');
-//     assert(marketplace.get_user_balance(user1) == 0.into(), 'get_user_balance');
-// }
-
 

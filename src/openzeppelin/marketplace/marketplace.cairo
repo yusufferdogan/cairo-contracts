@@ -12,7 +12,6 @@ use starknet::ContractAddress;
 use traits::Into;
 use traits::TryInto;
 use option::OptionTrait;
-use debug::PrintTrait;
 
 use integer::u256_from_felt252;
 use integer::Felt252IntoU256;
@@ -20,14 +19,18 @@ use integer::Felt252IntoU256;
 
 #[abi]
 trait IERC721 {
-    fn name() -> felt252;
-    fn symbol() -> felt252;
-    fn ownerOf(tokenId: u256) -> starknet::ContractAddress;
-    fn transferFrom(
-        from: starknet::ContractAddress, to: starknet::ContractAddress, tokenId: u256
-    ) -> u32;
-    fn mint(to: starknet::ContractAddress, tokenId: u256) -> u32;
-    fn burn(tokenId: u256) -> u32;
+    fn transfer_from(from: ContractAddress, to: ContractAddress, token_id: u256);
+    fn mint();
+    fn approve(to: ContractAddress, token_id: u256);
+    fn set_approval_for_all(operator: ContractAddress, approved: bool);
+    fn is_approved_for_all(owner: ContractAddress, operator: ContractAddress) -> bool;
+    fn get_approved(token_id: u256) -> ContractAddress;
+    fn token_uri(token_id: u256) -> felt252;
+    fn _base_uri() -> felt252;
+    fn balance_of(account: ContractAddress) -> u256;
+    fn owner_of(token_id: u256) -> ContractAddress;
+    fn get_name() -> felt252;
+    fn get_symbol() -> felt252;
 }
 
 #[abi]
@@ -107,7 +110,9 @@ impl ListingStorageAccess of StorageAccess<Listing> {
             address_domain, storage_address_from_base_and_offset(base, 1_u8), value.price.into()
         )?;
         storage_write_syscall(
-            address_domain, storage_address_from_base_and_offset(base, 2_u8), value.expires_at.into()
+            address_domain,
+            storage_address_from_base_and_offset(base, 2_u8),
+            value.expires_at.into()
         )
     }
 }
@@ -119,11 +124,15 @@ mod Marketplace {
     use super::Listing;
     use super::IERC20DispatcherTrait;
     use super::IERC20Dispatcher;
-    use super::IERC20LibraryDispatcher;
+    use super::IERC721DispatcherTrait;
+    use super::IERC721Dispatcher;
 
     use starknet::get_caller_address;
     use starknet::info::get_contract_address;
     use starknet::ContractAddress;
+    use integer::BoundedU256;
+
+    use debug::PrintTrait;
 
     struct Storage {
         _token: ContractAddress,
@@ -139,9 +148,16 @@ mod Marketplace {
     }
 
     #[external]
-    fn list(
-        nft_contract_address: ContractAddress, tokenId: u256, price: u128, expires_at: u128
-    ) {
+    fn list(nft_contract_address: ContractAddress, tokenId: u256, price: u128, expires_at: u128) {
+        // nft owner must set_approval_for_all for this contract
+
+        assert(
+            _erc721_dispatcher(
+                nft_contract_address
+            ).is_approved_for_all(get_caller_address(), get_contract_address()),
+            'must be approved for all'
+        );
+
         _listings::write(
             (nft_contract_address, tokenId),
             Listing { seller: get_caller_address(), price: price, expires_at: expires_at }
@@ -157,6 +173,12 @@ mod Marketplace {
     fn offer(
         nft_contract_address: ContractAddress, tokenId: u256, bid_amount: u128, expires_at: u128
     ) {
+        assert(
+            _erc20_dispatcher().allowance(
+                get_caller_address(), get_contract_address()
+            ) == BoundedU256::max(),
+            'must be aproved for max amount'
+        );
         _offers::write(
             (nft_contract_address, get_caller_address(), tokenId), Offer { bid_amount, expires_at }
         );
@@ -200,6 +222,11 @@ mod Marketplace {
     #[inline(always)]
     fn _erc20_dispatcher() -> IERC20Dispatcher {
         IERC20Dispatcher { contract_address: _token::read() }
+    }
+
+    #[inline(always)]
+    fn _erc721_dispatcher(_contract: ContractAddress) -> IERC721Dispatcher {
+        IERC721Dispatcher { contract_address: _contract }
     }
 
     #[view]
