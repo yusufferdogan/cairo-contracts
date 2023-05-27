@@ -89,7 +89,7 @@ mod ERC721 {
 
     #[external]
     fn mint() {
-        let cnt:u256 = count::read();
+        let cnt: u256 = count::read();
         count::write(cnt + 1.into());
         _mint(get_caller_address(), cnt);
     }
